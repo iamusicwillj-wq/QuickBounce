@@ -1,0 +1,38 @@
+# macOS / IDE metadata
+.DS_Store
+.swiftpm/
+DerivedData/
+*.xcuserstate
+
+# Python tool caches
+__pycache__/
+*.py[cod]
+
+# Swift and packaged application build products
+/.build/
+/Build/
+/.quickbounce-build-cache/
+
+# QuickBounce runtime, demo, probe, and test-generated data
+/.quickbounce-data/
+/.quickbounce-demo/
+/.quickbounce-probes/
+/.quickbounce-test-data/
+/Reports/
+/TestReports/
+
+# Licensed Avid SDK sources, build caches, and generated runtime framework.
+# Recreate the framework locally with Tools/build_ptsl.sh after obtaining the SDK.
+/PTSL_SDK_CPP.*/
+/Vendor/AvidPTSL/PTSLC_CPP.framework/
+
+# Generated dependencies and local signing material
+/Sources/QuickBounceLAMEShim/lib/
+*.a
+*.app/
+*.dmg
+*.ptx
+*.p12
+*.p8
+.env
+.env.*
