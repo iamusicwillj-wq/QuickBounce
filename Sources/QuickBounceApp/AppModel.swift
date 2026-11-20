@@ -109,7 +109,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var addMixShortcut = AddMixShortcutStore.loadRespectingExplicitClear()
     @Published private(set) var isAddMixShortcutActive = false
 
-    let quickLook = QuickLookPreviewController()
+    let moviePlayer = AVPlayer()
+    private var moviePreviewID: UUID?
 
     private var store: SQLiteStore?
     private var diagnostics: DiagnosticLogger?
@@ -321,7 +322,7 @@ final class AppModel: ObservableObject {
 
     var canHandleReviewSpacebar: Bool {
         !isBusy && editingPlanID == nil && !isPresentingAddMix
-            && (!selectedAudioArtifacts.isEmpty || selectedMOV != nil)
+            && (!selectedAudioArtifacts.isEmpty || reviewedMOV != nil)
     }
 
     var overwriteConfirmationMessage: String {
@@ -371,8 +372,10 @@ final class AppModel: ObservableObject {
         artifacts.filter { selectedArtifactIDs.contains($0.id) }
     }
 
-    var selectedMOV: AudioArtifact? {
-        selectedArtifacts.first { $0.canQuickLook }
+    var reviewedMOV: AudioArtifact? {
+        guard isReviewPaneVisible, !isBusy, selectedAudioArtifacts.isEmpty else { return nil }
+        let movies = selectedArtifacts.filter(\.canPreviewVideo)
+        return movies.first { $0.id == artifactSelectionAnchor } ?? movies.first
     }
 
     var selectedAudioArtifacts: [AudioArtifact] {
@@ -415,9 +418,11 @@ final class AppModel: ObservableObject {
             reviewExpanded: isReviewExpanded,
             keepOnTop: isKeepOnTopMode
         )
+        updateMoviePreview()
     }
 
     func detachWorkspaceWindow(_ window: NSWindow) {
+        moviePlayer.pause()
         if isKeepOnTopMode {
             globalHotKeyController?.unregister()
             isAddMixShortcutActive = false
@@ -428,11 +433,7 @@ final class AppModel: ObservableObject {
 
     func toggleReviewPane() {
         guard !isKeepOnTopMode else { return }
-        isReviewExpanded.toggle()
-        workspaceWindowController.apply(
-            reviewExpanded: isReviewExpanded,
-            keepOnTop: false
-        )
+        setReviewExpanded(!isReviewExpanded)
     }
 
     func toggleKeepOnTopMode() {
@@ -442,6 +443,7 @@ final class AppModel: ObservableObject {
     func setKeepOnTopMode(_ enabled: Bool) {
         guard enabled != isKeepOnTopMode else { return }
         isKeepOnTopMode = enabled
+        updateMoviePreview()
         workspaceWindowController.apply(
             reviewExpanded: isReviewExpanded,
             keepOnTop: enabled
@@ -500,6 +502,7 @@ final class AppModel: ObservableObject {
     private func setReviewExpanded(_ expanded: Bool) {
         guard expanded != isReviewExpanded else { return }
         isReviewExpanded = expanded
+        updateMoviePreview()
         workspaceWindowController.apply(
             reviewExpanded: expanded,
             keepOnTop: isKeepOnTopMode
@@ -512,6 +515,7 @@ final class AppModel: ObservableObject {
         isAddMixShortcutActive = false
         isKeepOnTopMode = false
         isReviewExpanded = true
+        updateMoviePreview()
         workspaceWindowController.apply(reviewExpanded: true, keepOnTop: false)
         workspaceWindowController.activateAndFocus()
     }
@@ -575,9 +579,10 @@ final class AppModel: ObservableObject {
                 statusMessage = "Review controls are live; Pro Tools writes are disabled"
                 reviewMode = demoStartsInStemsMode ? .stemsCheck : .mixCompare
                 if demoStartsWithMOV,
-                   let movie = artifacts.first(where: \.canQuickLook) {
+                   let movie = artifacts.first(where: \.canPreviewVideo) {
                     selectedArtifactIDs = [movie.id]
                     activeMixID = nil
+                    setReviewExpanded(true)
                 } else {
                     selectInitialArtifacts()
                 }
@@ -1425,7 +1430,7 @@ final class AppModel: ObservableObject {
         authorizedOverwritePaths: Set<String>
     ) async {
         guard let coordinator else { return }
-        quickLook.close()
+        moviePlayer.pause()
         reviewEngine?.pause()
         isPlaying = false
         // End any work belonging to the previous batch. As soon as each new
@@ -1536,7 +1541,6 @@ final class AppModel: ObservableObject {
         guard !isBusy, let store,
               let artifact = artifacts.first(where: { $0.id == id }) else { return }
         let wasSelected = selectedArtifactIDs.contains(id)
-        let wasPreviewedMOV = selectedMOV?.id == id
         resetAudioAnalysis(clearWaveforms: false)
 
         Task {
@@ -1552,8 +1556,6 @@ final class AppModel: ObservableObject {
                     reviewEngine?.pause()
                     isPlaying = false
                 }
-                if wasPreviewedMOV { quickLook.close() }
-
                 artifacts.removeAll { $0.id == id }
                 selectedArtifactIDs.remove(id)
                 waveforms.removeValue(forKey: id)
@@ -1579,17 +1581,27 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func openMOV(_ artifact: AudioArtifact) {
-        guard artifact.canQuickLook else { return }
-        WorkspaceNavigation.open(artifact.fileURL)
+    func openMOV(_ artifact: AudioArtifact, inBrowser: Bool = false) {
+        guard artifact.canPreviewVideo else { return }
+        guard FileManager.default.fileExists(atPath: artifact.path) else {
+            errorMessage = "The file has been moved or deleted: \(artifact.path)"
+            return
+        }
+        moviePlayer.pause()
+        if inBrowser {
+            Task {
+                do {
+                    try await WorkspaceNavigation.openInDefaultBrowser(artifact.fileURL)
+                } catch {
+                    errorMessage = "This video could not be opened in the default browser."
+                }
+            }
+        } else if !NSWorkspace.shared.open(artifact.fileURL) {
+            errorMessage = "This video could not be opened in the default video player."
+        }
     }
 
-    func toggleQuickLook() {
-        guard let movie = selectedMOV else { return }
-        quickLook.toggle(url: movie.fileURL)
-    }
-
-    func selectArtifact(_ id: UUID, modifiers: NSEvent.ModifierFlags = []) {
+    func selectArtifact(_ id: UUID, modifiers: NSEvent.ModifierFlags = [], autoplayMovie: Bool = true) {
         guard artifacts.contains(where: { $0.id == id }) else { return }
         if modifiers.contains(.option) {
             let completed = artifacts.filter { $0.state == .completed }
@@ -1618,6 +1630,9 @@ final class AppModel: ObservableObject {
             activeMixID = selectedAudioArtifacts.first?.id
         }
         reloadReviewGraph()
+        if autoplayMovie, reviewedMOV?.id == id {
+            playMoviePreview()
+        }
     }
 
     func setReviewMode(_ mode: ReviewMode) {
@@ -1672,11 +1687,24 @@ final class AppModel: ObservableObject {
     }
 
     func handleReviewSpacebar() {
-        if !selectedAudioArtifacts.isEmpty {
+        if reviewedMOV != nil {
+            if moviePlayer.timeControlStatus == .paused {
+                playMoviePreview()
+            } else {
+                moviePlayer.pause()
+            }
+        } else {
             togglePlayback()
-        } else if selectedMOV != nil {
-            toggleQuickLook()
         }
+    }
+
+    private func playMoviePreview() {
+        guard let item = moviePlayer.currentItem else { return }
+        let end = item.duration
+        if end.isNumeric, moviePlayer.currentTime() >= end {
+            moviePlayer.seek(to: .zero)
+        }
+        moviePlayer.play()
     }
 
     func stopPlayback() {
@@ -1744,6 +1772,7 @@ final class AppModel: ObservableObject {
                     self.setReviewExpanded(true)
                 }
                 self.selectFirstArtifactForLiveAnalysisIfNeeded()
+                self.updateMoviePreview()
                 self.events = snapshot.events
                 self.batchDestinations = snapshot.batchDestinations
                 let failureMessage = snapshot.job.flatMap { job in
@@ -1880,13 +1909,23 @@ final class AppModel: ObservableObject {
         let availableIDs = Set(artifacts.map(\.id))
         selectedArtifactIDs.formIntersection(availableIDs)
         guard selectedArtifactIDs.isEmpty,
-              let firstAudio = artifacts.first(where: \.canReviewAudio) else { return }
-        selectedArtifactIDs = [firstAudio.id]
-        artifactSelectionAnchor = firstAudio.id
-        activeMixID = firstAudio.id
+              let first = artifacts.first(where: \.canReviewAudio)
+                ?? artifacts.first(where: \.canPreviewVideo) else { return }
+        selectedArtifactIDs = [first.id]
+        artifactSelectionAnchor = first.id
+        activeMixID = first.canReviewAudio ? first.id : nil
+    }
+
+    private func updateMoviePreview() {
+        let movie = reviewedMOV
+        guard moviePreviewID != movie?.id else { return }
+        moviePlayer.pause()
+        moviePreviewID = movie?.id
+        moviePlayer.replaceCurrentItem(with: movie.map { AVPlayerItem(url: $0.fileURL) })
     }
 
     private func reloadReviewGraph() {
+        updateMoviePreview()
         guard let reviewEngine else { return }
         do {
             try reviewEngine.load(selectedAudioArtifacts, mode: reviewMode)
@@ -1949,6 +1988,7 @@ final class AppModel: ObservableObject {
             guard !(NSApp.keyWindow?.firstResponder is NSTextView),
                   let self,
                   self.canHandleReviewSpacebar else { return event }
+            guard !event.isARepeat else { return nil }
             self.handleReviewSpacebar()
             return nil
         })

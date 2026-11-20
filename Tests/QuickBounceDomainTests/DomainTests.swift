@@ -43,7 +43,7 @@ import Testing
         state: .completed
     )
     #expect(!artifact.canReviewAudio)
-    #expect(artifact.canQuickLook)
+    #expect(artifact.canPreviewVideo)
     #expect(!artifact.kind.hasWaveform)
 }
 

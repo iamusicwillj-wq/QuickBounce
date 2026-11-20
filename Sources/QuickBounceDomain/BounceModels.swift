@@ -29,6 +29,19 @@ public enum MOVAudioCodec: String, Codable, CaseIterable, Identifiable, Sendable
     public static let aacSampleRates = [44_100, 48_000]
 }
 
+public enum AACBitRateMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case cbr
+    case vbr
+
+    public var id: String { rawValue }
+    public var displayName: String {
+        switch self {
+        case .cbr: "CBR (Constant Bit Rate)"
+        case .vbr: "VBR (Variable Bit Rate)"
+        }
+    }
+}
+
 public enum AudioFileLayout: String, Codable, CaseIterable, Identifiable, Sendable {
     case mono
     case multipleMono
@@ -83,6 +96,7 @@ public struct BounceSettings: Codable, Hashable, Sendable {
     public var bitDepth: Int
     public var fileLayout: AudioFileLayout
     public var movAudioCodec: MOVAudioCodec
+    public var movAACBitRateMode: AACBitRateMode
     public var mp3Quality: MP3EncodingQuality
     public var mp3ConstantBitRateKbps: Int
     public var importAfterBounce: Bool
@@ -98,6 +112,7 @@ public struct BounceSettings: Codable, Hashable, Sendable {
         bitDepth: Int = 24,
         fileLayout: AudioFileLayout = .interleaved,
         movAudioCodec: MOVAudioCodec = .pcm,
+        movAACBitRateMode: AACBitRateMode = .cbr,
         mp3Quality: MP3EncodingQuality = .highest,
         mp3ConstantBitRateKbps: Int = 320,
         importAfterBounce: Bool = false,
@@ -112,6 +127,7 @@ public struct BounceSettings: Codable, Hashable, Sendable {
         self.bitDepth = bitDepth
         self.fileLayout = fileLayout
         self.movAudioCodec = movAudioCodec
+        self.movAACBitRateMode = movAACBitRateMode
         self.mp3Quality = mp3Quality
         self.mp3ConstantBitRateKbps = mp3ConstantBitRateKbps
         self.importAfterBounce = importAfterBounce && exportType.supportsImportAfterBounce
@@ -128,6 +144,7 @@ public struct BounceSettings: Codable, Hashable, Sendable {
         case bitDepth
         case fileLayout
         case movAudioCodec
+        case movAACBitRateMode
         case mp3Quality
         case mp3ConstantBitRateKbps
         case importAfterBounce
@@ -146,6 +163,7 @@ public struct BounceSettings: Codable, Hashable, Sendable {
             bitDepth: try container.decodeIfPresent(Int.self, forKey: .bitDepth) ?? 24,
             fileLayout: try container.decodeIfPresent(AudioFileLayout.self, forKey: .fileLayout) ?? .interleaved,
             movAudioCodec: try container.decodeIfPresent(MOVAudioCodec.self, forKey: .movAudioCodec) ?? .pcm,
+            movAACBitRateMode: try container.decodeIfPresent(AACBitRateMode.self, forKey: .movAACBitRateMode) ?? .cbr,
             mp3Quality: try container.decodeIfPresent(MP3EncodingQuality.self, forKey: .mp3Quality) ?? .highest,
             mp3ConstantBitRateKbps: try container.decodeIfPresent(Int.self, forKey: .mp3ConstantBitRateKbps) ?? 320,
             importAfterBounce: try container.decodeIfPresent(Bool.self, forKey: .importAfterBounce) ?? false,

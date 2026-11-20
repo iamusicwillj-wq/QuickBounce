@@ -104,7 +104,6 @@ public actor BounceCoordinator {
     private let transcoder: MP3Transcoder
     private let movAACTranscoder = MOVAACTranscoder()
     private let lease: SessionMutationLease
-    private let workDirectory: URL
     private let availableCapacity: AvailableCapacityProvider
     private let diagnostics: DiagnosticLogger?
     private let outputResolver = OutputDirectoryResolver()
@@ -132,14 +131,14 @@ public actor BounceCoordinator {
     ) throws {
         self.proTools = proTools
         self.store = store
-        self.workDirectory = workDirectory.standardizedFileURL
         self.diagnostics = diagnostics
         self.inspector = inspector
         self.locator = locator
         self.transcoder = transcoder
         self.lease = lease
         self.availableCapacity = availableCapacity
-        try StagingDirectoryLifecycle.prepareRoot(self.workDirectory)
+        // Clean up older releases' cache staging directories on launch.
+        try StagingDirectoryLifecycle.prepareRoot(workDirectory.standardizedFileURL)
     }
 
     public func snapshots() -> AsyncStream<BounceCoordinatorSnapshot> {
@@ -259,13 +258,15 @@ public actor BounceCoordinator {
             )
         }
 
+        var stagingDirectories: [URL] = []
         defer {
-            try? StagingDirectoryLifecycle.removeJob(in: workDirectory, jobID: job.id)
+            for directory in stagingDirectories {
+                try? StagingDirectoryLifecycle.removePlanDirectory(directory)
+            }
         }
 
         do {
             plans = try BounceOutputNaming.preparing(plans)
-            try StagingDirectoryLifecycle.prepareJob(in: workDirectory, jobID: job.id)
             try await lease.acquire(for: job.id)
             try await transition(&job, to: .validating, message: "Validating \(plans.count) Bounce Plans")
             try outputResolver.validate(plans, crossSession: crossSession)
@@ -391,8 +392,10 @@ public actor BounceCoordinator {
 
                         let output = try await executePlan(
                             plan,
+                            activeSession: active,
                             activeSessionTimeCodeRate: info.timeCodeRate,
                             job: &job,
+                            stagingDirectories: &stagingDirectories,
                             authorizedOverwritePaths: authorizedOverwritePaths
                         )
                         pendingImports.append(contentsOf: importRequests(for: plan, artifacts: output))
@@ -559,14 +562,18 @@ public actor BounceCoordinator {
 
     private func executePlan(
         _ plan: BouncePlan,
+        activeSession: SessionIdentity,
         activeSessionTimeCodeRate: SessionTimeCodeRate?,
         job: inout BounceJob,
+        stagingDirectories: inout [URL],
         authorizedOverwritePaths: Set<String>
     ) async throws -> [AudioArtifact] {
-        let staging = workDirectory
-            .appendingPathComponent(job.id.uuidString, isDirectory: true)
-            .appendingPathComponent(plan.id.uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        let destination = outputResolver.canonicalURL(for: plan.settings.fileDestination)
+        try preflightDestinations([destination])
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let staging = destination.appendingPathComponent(".quickbounce-bounce-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        stagingDirectories.append(staging)
         let baseName = sanitizedFileName(plan.name, planID: plan.id)
         let bounceKind: ArtifactKind = switch plan.settings.exportType {
         case .wav, .wavAndMP3: .wav
@@ -585,14 +592,32 @@ public actor BounceCoordinator {
         // modern Hosts receive both this selection and the direct fields.
         try await proTools.setTimelineSelection(plan.range)
         try await transition(&job, to: .exporting, message: "Bouncing \(plan.name)")
-        let result = try await proTools.exportMix(
-            ProToolsExportRequest(
-                plan: plan,
-                stagingDirectory: staging,
-                baseFileName: baseName,
-                kind: bounceKind
-            )
+        var request = ProToolsExportRequest(
+            plan: plan,
+            stagingDirectory: staging,
+            baseFileName: baseName,
+            kind: bounceKind
         )
+        let result: ProToolsExportResult
+        do {
+            result = try await proTools.exportMix(request)
+        } catch let failure as PTSLTransportError where bounceKind == .mov && failure.canRetryWithVideoTranscode {
+            try checkCancellation()
+            try await proTools.waitUntilReady()
+            let current = try await proTools.currentSessionIdentity()
+            guard current.instanceID == activeSession.instanceID, current.path == activeSession.path else {
+                throw QuickBounceError.sessionIdentityMismatch
+            }
+            try checkCancellation()
+            try await proTools.setTimelineSelection(plan.range)
+            try await transition(&job, to: .exporting, message: "Retrying \(plan.name) with H.264 video")
+            try checkCancellation()
+            // A rejected request can leave a partial MOV in the first folder.
+            request.stagingDirectory = staging.appendingPathComponent("Transcode", isDirectory: true)
+            try FileManager.default.createDirectory(at: request.stagingDirectory, withIntermediateDirectories: false)
+            request.videoMode = .transcodeH264
+            result = try await proTools.exportMix(request)
+        }
         try checkCancellation()
         try await transition(
             &job,
@@ -603,13 +628,13 @@ public actor BounceCoordinator {
         var candidates = result.candidateURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
         if candidates.isEmpty {
             candidates = try await locator.expectedCandidates(
-                in: staging,
+                in: request.stagingDirectory,
                 baseName: baseName,
                 kind: bounceKind,
                 allowsMultipleMonoSuffixes: bounceExpectation.allowsMultipleMonoSuffixes
             )
         }
-        guard !candidates.isEmpty else { throw QuickBounceError.artifactMissing(staging.path) }
+        guard !candidates.isEmpty else { throw QuickBounceError.artifactMissing(request.stagingDirectory.path) }
         if !bounceExpectation.allowsMultipleMonoSuffixes, candidates.count != 1 {
             throw QuickBounceError.artifactInvalid(
                 "Expected one \(bounceKind.rawValue.uppercased()) file for \(plan.name), found \(candidates.count)"
@@ -631,8 +656,6 @@ public actor BounceCoordinator {
             )
         }
 
-        let destination = outputResolver.canonicalURL(for: plan.settings.fileDestination)
-        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         var completed: [AudioArtifact] = []
 
         let needsLocalMP3 = plan.settings.exportType == .wavAndMP3
@@ -649,7 +672,9 @@ public actor BounceCoordinator {
             for source in candidates {
                 try checkCancellation()
                 let output = encodedDirectory.appendingPathComponent(source.lastPathComponent)
-                try await movAACTranscoder.transcode(source: source, destination: output)
+                try await movAACTranscoder.transcode(
+                    source: source, destination: output, bitRateMode: plan.settings.movAACBitRateMode
+                )
                 try checkCancellation()
                 encoded.append(output)
             }
@@ -736,7 +761,7 @@ public actor BounceCoordinator {
                 completed.append(artifact)
             }
         }
-        try StagingDirectoryLifecycle.removePlanDirectory(staging)
+        try? StagingDirectoryLifecycle.removePlanDirectory(staging)
         return completed
     }
 
@@ -1080,6 +1105,17 @@ public actor BounceCoordinator {
 
     private func preflightDestinations(_ destinations: [URL]) throws {
         for destination in destinations {
+            // A stale /Volumes path must never become a new system-disk folder.
+            let components = destination.pathComponents
+            if components.count >= 3, components[1] == "Volumes" {
+                let mountPath = "/Volumes/\(components[2])"
+                let mounted = FileManager.default.mountedVolumeURLs(
+                    includingResourceValuesForKeys: nil, options: []
+                )?.contains { $0.standardizedFileURL.path == mountPath } == true
+                guard mounted else {
+                    throw QuickBounceError.invalidPlan("The export disk is not mounted: \(mountPath)")
+                }
+            }
             var values = try? destination.resourceValues(forKeys: [.isDirectoryKey])
             if values != nil, values?.isDirectory != true {
                 throw QuickBounceError.invalidPlan("Destination is not a directory: \(destination.path)")

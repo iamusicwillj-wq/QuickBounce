@@ -1,38 +1,5 @@
 import AppKit
 import Foundation
-@preconcurrency import QuickLookUI
-
-@MainActor
-final class QuickLookPreviewController: NSObject, @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate {
-    private var previewURL: URL?
-
-    func toggle(url: URL) {
-        guard let panel = QLPreviewPanel.shared() else { return }
-        if panel.isVisible, previewURL == url {
-            panel.orderOut(nil)
-            previewURL = nil
-            return
-        }
-        previewURL = url
-        panel.dataSource = self
-        panel.delegate = self
-        panel.reloadData()
-        panel.makeKeyAndOrderFront(nil)
-    }
-
-    func close() {
-        QLPreviewPanel.shared()?.orderOut(nil)
-        previewURL = nil
-    }
-
-    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        previewURL == nil ? 0 : 1
-    }
-
-    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        previewURL as NSURL?
-    }
-}
 
 @MainActor
 enum WorkspaceNavigation {
@@ -47,6 +14,15 @@ enum WorkspaceNavigation {
 
     static func open(_ url: URL) {
         NSWorkspace.shared.open(url)
+    }
+
+    static func openInDefaultBrowser(_ url: URL) async throws {
+        let workspace = NSWorkspace.shared
+        let webURL = URL(string: "https://example.com")!
+        guard let browser = workspace.urlForApplication(toOpen: webURL) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        _ = try await workspace.open([url], withApplicationAt: browser, configuration: .init())
     }
 
     static func openDirectories(_ urls: [URL]) -> DirectoryOpenResult {

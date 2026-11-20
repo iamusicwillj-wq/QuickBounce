@@ -47,3 +47,29 @@ func commonPTSLErrorsHaveShortBilingualGuidance(code: String) throws {
     #expect(UserFacingError.message(for: validation) == validation)
     #expect(UserFacingError.message(for: "Bounce Plan is invalid: Choose a non-empty Pro Tools Timeline Selection").contains("Select a time range"))
 }
+
+@Test func bounceVolumeFailureTakesPrecedenceOverLongGOPWarning() throws {
+    let warning: [String: Any] = [
+        "command_error_type": "CEType_PT_UnknownError",
+        "command_error_message": "Video within the current timeline selection is not supported for Same as Source export.\n\nLong GOP video requires the first frame of the file to be included in the bounce range.",
+        "is_warning": true
+    ]
+    let failure: [String: Any] = [
+        "command_error_type": "CEType_PT_UnknownError",
+        "command_error_message": "Can't create bounce files because \"Macintosh HD\" is not an audio playback volume..",
+        "is_warning": false
+    ]
+    func message(_ errors: [[String: Any]]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: ["errors": errors])
+        return UserFacingError.message(for: "PTSL status 4: " + String(decoding: data, as: UTF8.self))
+    }
+
+    let combined = try message([warning, failure])
+    let volumeOnly = try message([failure])
+    #expect(combined.hasPrefix(volumeOnly + "\n\n"))
+    #expect(volumeOnly.contains("Workspace"))
+    #expect(combined.contains("first frame"))
+    let chinese = Copy.render(combined, language: .simplifiedChinese)
+    #expect(chinese.contains("磁盘卷") && chinese.contains("第一帧"))
+    #expect(try message([warning]).contains("diagnostic log"))
+}

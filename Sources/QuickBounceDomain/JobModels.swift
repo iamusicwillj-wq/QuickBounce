@@ -252,7 +252,7 @@ public struct AudioArtifact: Codable, Hashable, Identifiable, Sendable {
 
     public var fileURL: URL { URL(fileURLWithPath: path) }
     public var canReviewAudio: Bool { state == .completed && kind.hasWaveform }
-    public var canQuickLook: Bool { state == .completed && kind == .mov }
+    public var canPreviewVideo: Bool { state == .completed && kind == .mov }
 }
 
 public struct BounceJob: Codable, Hashable, Identifiable, Sendable {

@@ -12,6 +12,18 @@ import Testing
     #expect(try JSONDecoder().decode(BounceSettings.self, from: legacyData).movAudioCodec == .pcm)
 }
 
+@Test(arguments: AACBitRateMode.allCases)
+func movAACBitRateModePersistsAndLegacySettingsDefaultToCBR(mode: AACBitRateMode) throws {
+    let settings = BounceSettings(exportType: .mov, movAudioCodec: .aac,
+                                  movAACBitRateMode: mode, fileDestination: "/tmp")
+    let data = try JSONEncoder().encode(settings)
+    #expect(try JSONDecoder().decode(BounceSettings.self, from: data).movAACBitRateMode == mode)
+    var legacy = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    legacy.removeValue(forKey: "movAACBitRateMode")
+    let legacyData = try JSONSerialization.data(withJSONObject: legacy)
+    #expect(try JSONDecoder().decode(BounceSettings.self, from: legacyData).movAACBitRateMode == .cbr)
+}
+
 private func fixture() -> (BouncePlan, SessionInfo, [TrackState]) {
     let session = SessionIdentity(path: "/Sessions/Song/Song.ptx", originID: "original", instanceID: "old", proToolsVersion: "2026.4", ptslVersion: "2026.4")
     let folder = TrackState(track: TrackReference(id: "folder", name: "Band", index: 0, kind: "TT_BasicFolder"), isSolo: true, isMuted: false)

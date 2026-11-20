@@ -9,23 +9,27 @@ import QuickBounceProTools
 import QuickBounceTestSupport
 import Testing
 
-@Test(arguments: [MOVAudioCodec.pcm, .aac])
-func movBounceDeliversRequestedCodecWithoutMovingPictureOrSound(codec: MOVAudioCodec) async throws {
+@Test(arguments: [MOVAudioCodec.pcm, .aac], AACBitRateMode.allCases)
+func movBounceDeliversRequestedCodecWithoutMovingPictureOrSound(codec: MOVAudioCodec, bitRateMode: AACBitRateMode) async throws {
     // H.264 with B-frames, a timecode track and a PCM track that begins
     // 160 ms into the movie. The first audible marker is at 410 ms.
     let source = try #require(Bundle.module.url(
         forResource: "delayed-audio", withExtension: "mov", subdirectory: "Fixtures"
     ))
-    let environment = try await makeEnvironment("mov-codec-\(codec.rawValue)", exportWriter: { _, output in
+    let environment = try await makeEnvironment("mov-codec-\(codec.rawValue)-\(bitRateMode.rawValue)", exportWriter: { _, output in
         try FileManager.default.copyItem(at: source, to: output)
     })
     let plan = makePlan(name: "Picture", settings: BounceSettings(
-        exportType: .mov, bitDepth: 16, movAudioCodec: codec,
+        exportType: .mov, bitDepth: 16, movAudioCodec: codec, movAACBitRateMode: bitRateMode,
         padToFrameBoundary: false, fileDestination: environment.output.path
     ))
     let job = await environment.coordinator.run(plans: [plan], crossSession: false)
     #expect(job.state == .reviewReady, "Failure: \(job.failureMessage ?? "none")")
-    #expect(await environment.adapter.trace().exportRequests.count == 1)
+    let requests = await environment.adapter.trace().exportRequests
+    #expect(requests.count == 1)
+    let staging = try #require(requests.first?.stagingDirectory)
+    #expect(staging.deletingLastPathComponent().path == environment.output.path)
+    #expect(!FileManager.default.fileExists(atPath: staging.path))
     let artifact = try #require(await environment.coordinator.snapshot().artifacts.first)
     let output = artifact.fileURL
     #expect(output.lastPathComponent == "Picture.mov")
@@ -50,6 +54,50 @@ func movBounceDeliversRequestedCodecWithoutMovingPictureOrSound(codec: MOVAudioC
     let markerAfter = try await firstAudibleSample(output)
     #expect(abs(markerBefore - 0.410) < 0.001)
     #expect(abs(markerAfter - markerBefore) < 0.001)
+}
+
+@Test(arguments: [false, true])
+func movRetriesOnlyForSameAsSourceRejection(volumeError: Bool) async throws {
+    let source = try #require(Bundle.module.url(
+        forResource: "delayed-audio", withExtension: "mov", subdirectory: "Fixtures"
+    ))
+    let reason = volumeError
+        ? #"Can't create bounce files because \"Macintosh HD\" is not an audio playback volume.."#
+        : "Failed to procede with bounce. Refer to error dialog."
+    let environment = try await makeEnvironment("mov-video-retry", exportWriter: { request, output in
+        if request.videoMode == .sameAsSource {
+            // Some failed host exports leave a partial file.
+            try Data("partial MOV".utf8).write(to: output)
+            throw PTSLTransportError.command(status: 4, message: """
+            {"errors":[
+              {"command_error_type":"CEType_PT_UnknownError","command_error_message":"Long GOP video requires the first frame of the file to be included in the bounce range.","is_warning":true},
+              {"command_error_type":"CEType_PT_UnknownError","command_error_message":"\(reason)","is_warning":false}
+            ]}
+            """)
+        }
+        try FileManager.default.copyItem(at: source, to: output)
+    })
+    let plan = makePlan(name: "Picture", settings: BounceSettings(
+        exportType: .mov, bitDepth: 16, movAudioCodec: .aac,
+        padToFrameBoundary: false, fileDestination: environment.output.path
+    ))
+    let originalTimeline = try await environment.adapter.currentTimelineState()
+    let job = await environment.coordinator.run(plans: [plan], crossSession: false)
+    let requests = await environment.adapter.trace().exportRequests
+    let expectedModes: [ProToolsVideoExportMode] = volumeError ? [.sameAsSource] : [.sameAsSource, .transcodeH264]
+    #expect(requests.map(\.videoMode) == expectedModes)
+    #expect(requests.allSatisfy { $0.plan.range == plan.range })
+    #expect(requests.allSatisfy { !FileManager.default.fileExists(atPath: $0.stagingDirectory.path) })
+    #expect(try await environment.adapter.currentTimelineState() == originalTimeline)
+    if volumeError {
+        #expect(job.state == .failed)
+        #expect(job.failureMessage?.contains("is not an audio playback volume") == true)
+        #expect((await environment.coordinator.snapshot()).completedPlanIDsToRemove.isEmpty)
+    } else {
+        #expect(job.state == .reviewReady, "Failure: \(job.failureMessage ?? "none")")
+        let artifact = try #require((await environment.coordinator.snapshot()).artifacts.first)
+        #expect(artifact.fileURL.deletingLastPathComponent().path == environment.output.path)
+    }
 }
 
 private struct MovieSample: Equatable {

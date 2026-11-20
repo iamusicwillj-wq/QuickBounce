@@ -100,3 +100,77 @@ func reviewAutoExpansionRunsOnceAfterFirstCompletedMix() {
     if let visible = window.screen?.visibleFrame { #expect(visible.contains(window.frame)) }
     controller.detach(window: window)
 }
+
+@MainActor
+@Test func screenChangeRestoresExpandedWorkspaceFromCompactWidth() async throws {
+    _ = NSApplication.shared
+    let window = NSWindow(
+        contentRect: NSRect(x: 100, y: 100, width: 1400, height: 800),
+        styleMask: [.titled, .resizable], backing: .buffered, defer: false
+    )
+    window.isReleasedWhenClosed = false
+    let controller = WorkspaceWindowController()
+    defer {
+        controller.detach(window: window)
+        window.close()
+    }
+    controller.attach(window: window, reviewExpanded: false, keepOnTop: false)
+    controller.apply(reviewExpanded: true, keepOnTop: false, animated: false)
+
+    var compactFrame = window.frame
+    compactFrame.size.width = 725
+    let previousScreen = window.screen
+    let destination = NSScreen.screens.first { $0.frame != previousScreen?.frame } ?? previousScreen
+    if let destination {
+        let visible = destination.visibleFrame
+        compactFrame.origin = NSPoint(x: visible.maxX - compactFrame.width, y: visible.minY)
+    }
+    window.setFrame(compactFrame, display: false)
+    try #require(window.contentRect(forFrameRect: window.frame).width < window.contentMinSize.width)
+    NotificationCenter.default.post(name: NSWindow.didChangeScreenNotification, object: window)
+
+    // The notification handler schedules the window update on the main actor.
+    for _ in 0..<20 {
+        if window.contentRect(forFrameRect: window.frame).width >= window.contentMinSize.width { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(window.contentRect(forFrameRect: window.frame).width >= window.contentMinSize.width)
+    if let destination {
+        #expect(destination.visibleFrame.contains(window.frame))
+    }
+}
+
+@MainActor
+@Test func screenChangeFinishesCollapseWhenWindowIsStillWide() async throws {
+    _ = NSApplication.shared
+    let window = NSWindow(
+        contentRect: NSRect(x: 100, y: 100, width: 1400, height: 750),
+        styleMask: [.titled, .resizable], backing: .buffered, defer: false
+    )
+    window.isReleasedWhenClosed = false
+    let controller = WorkspaceWindowController()
+    defer {
+        controller.detach(window: window)
+        window.close()
+    }
+    controller.attach(window: window, reviewExpanded: true, keepOnTop: false)
+    let expandedWidth = window.contentRect(forFrameRect: window.frame).width
+    controller.apply(reviewExpanded: false, keepOnTop: false, animated: false)
+    let compactWidth = window.contentRect(forFrameRect: window.frame).width
+
+    // Reproduce a screen change reported while the window still has an
+    // intermediate width from the collapse animation.
+    var frame = window.frame
+    frame.size.width = 1003
+    window.setFrame(frame, display: false)
+    try #require(window.contentRect(forFrameRect: window.frame).width > compactWidth)
+    NotificationCenter.default.post(name: NSWindow.didChangeScreenNotification, object: window)
+
+    for _ in 0..<20 {
+        if window.contentRect(forFrameRect: window.frame).width <= compactWidth { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(window.contentRect(forFrameRect: window.frame).width == compactWidth)
+    controller.apply(reviewExpanded: true, keepOnTop: false, animated: false)
+    #expect(window.contentRect(forFrameRect: window.frame).width == expandedWidth)
+}

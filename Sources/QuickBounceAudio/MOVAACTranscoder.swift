@@ -8,12 +8,12 @@ public actor MOVAACTranscoder {
 
     public init() {}
 
-    public func transcode(source: URL, destination: URL) async throws {
+    public func transcode(source: URL, destination: URL, bitRateMode: AACBitRateMode = .cbr) async throws {
         guard activeTask == nil else {
             throw QuickBounceError.invalidPlan("The MOV audio encoder is already busy")
         }
         let task = Task.detached(priority: .utility) {
-            try await Self.encode(source: source, destination: destination)
+            try await Self.encode(source: source, destination: destination, bitRateMode: bitRateMode)
         }
         activeTask = task
         defer { activeTask = nil }
@@ -35,7 +35,7 @@ public actor MOVAACTranscoder {
         var finished = false
     }
 
-    private static func encode(source: URL, destination: URL) async throws {
+    private static func encode(source: URL, destination: URL, bitRateMode: AACBitRateMode) async throws {
         try Task.checkCancellation()
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw QuickBounceError.exportFailed("Refusing to overwrite \(destination.path)")
@@ -71,7 +71,7 @@ public actor MOVAACTranscoder {
             guard descriptions.count == 1, let description = descriptions.first else {
                 throw QuickBounceError.artifactInvalid("MOV track uses an unsupported format description")
             }
-            let settings = mediaType == .audio ? try aacSettings(from: description) : nil
+            let settings = mediaType == .audio ? try aacSettings(from: description, bitRateMode: bitRateMode) : nil
             if let settings, !writer.canApply(outputSettings: settings, forMediaType: .audio) {
                 throw QuickBounceError.artifactInvalid("The AAC encoder does not support this MOV audio format")
             }
@@ -142,7 +142,7 @@ public actor MOVAACTranscoder {
         completed = true
     }
 
-    private static func aacSettings(from description: CMFormatDescription) throws -> [String: Any] {
+    static func aacSettings(from description: CMFormatDescription, bitRateMode: AACBitRateMode) throws -> [String: Any] {
         guard let stream = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
               stream.mFormatID == kAudioFormatLinearPCM,
               stream.mSampleRate > 0, stream.mChannelsPerFrame > 0 else {
@@ -152,9 +152,16 @@ public actor MOVAACTranscoder {
         var settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: stream.mSampleRate,
-            AVNumberOfChannelsKey: channels,
-            AVEncoderBitRateKey: channels > 2 ? 64_000 * channels : 128_000 * channels
+            AVNumberOfChannelsKey: channels
         ]
+        switch bitRateMode {
+        case .cbr:
+            settings[AVEncoderBitRateStrategyKey] = AVAudioBitRateStrategy_Constant
+            settings[AVEncoderBitRateKey] = channels > 2 ? 64_000 * channels : 128_000 * channels
+        case .vbr:
+            settings[AVEncoderBitRateStrategyKey] = AVAudioBitRateStrategy_Variable
+            settings[AVEncoderAudioQualityForVBRKey] = AVAudioQuality.max.rawValue
+        }
         if channels > 2 {
             let labels = channelLabels(for: description, channels: channels)
             var specifier = AudioStreamBasicDescription()

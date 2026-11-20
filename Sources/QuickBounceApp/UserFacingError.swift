@@ -3,8 +3,7 @@ import Foundation
 import SwiftUI
 
 /// Presentation only: keep the original error in the model/log, and select a
-/// short explanation using PTSL's documented error type. Never guess that an
-/// unknown Host error was caused by the user's settings.
+/// short explanation using PTSL's error type or a specific Host message.
 enum UserFacingError {
     private static let connection = "QuickBounce could not connect to Pro Tools. Open Pro Tools, wait until it is ready, then reconnect."
     private static let selection = "Select a time range in Pro Tools, then add the Mix again."
@@ -22,6 +21,10 @@ enum UserFacingError {
     private static let name = "This file name is not accepted by Pro Tools. Use a shorter name without special characters."
     private static let video = "Pro Tools cannot find a video track to export. Check the Session’s video track, or choose WAV or MP3."
     private static let videoEngine = "The Pro Tools video engine is unavailable. Enable it and wait for the video to load, then try again."
+    private static let bounceVolume = "Pro Tools could not create the bounce files. In Pro Tools Workspace, check the audio designation of the volume named in Technical Details."
+    private static let longGOPSelection = "Same as Source also requires the first frame of this source video. To keep the current selection, choose video transcoding in Pro Tools."
+    private static let bounceVolumeChinese = "Pro Tools 无法创建导出文件。请在 Pro Tools 的 Workspace 中检查「技术详情」所列磁盘卷的音频权限。"
+    private static let longGOPSelectionChinese = "此外，「与源相同」要求选区包含源视频的第一帧。若要保留当前选区，请在 Pro Tools 中选择视频转码。"
     private static let sampleRate = "The sample rates do not match. Check the Session and export sample-rate settings."
     private static let readOnly = "This Session is read-only. Save a writable copy in Pro Tools, then try again."
     private static let version = "This feature is unavailable in your Pro Tools version. Choose another option or update Pro Tools."
@@ -52,6 +55,8 @@ enum UserFacingError {
         name: "Pro Tools 不接受这个文件名。请缩短名称，并避免使用特殊字符。",
         video: "Pro Tools 未找到可导出的视频轨道。请检查工程的视频轨道，或改选 WAV、MP3。",
         videoEngine: "Pro Tools 视频引擎不可用。请启用视频引擎，等待视频加载后重试。",
+        bounceVolume: bounceVolumeChinese,
+        bounceVolume + "\n\n" + longGOPSelection: bounceVolumeChinese + "\n\n" + longGOPSelectionChinese,
         sampleRate: "采样率不一致。请检查工程与导出的采样率设置。",
         readOnly: "这个工程是只读的。请先在 Pro Tools 中另存为可写入的副本，再重试。",
         version: "当前 Pro Tools 版本不支持这项功能。请改选其他选项，或更新 Pro Tools。",
@@ -79,7 +84,9 @@ enum UserFacingError {
         if raw.hasPrefix("Not enough disk space:") { return space }
         if raw.hasPrefix("Review analysis ") { return analysis }
 
-        if let code = ptslErrorCode(in: raw) {
+        if let errors = ptslErrors(in: raw),
+           let error = errors.first(where: { ($0["is_warning"] as? Bool) != true }) {
+            let code = ptslErrorCode(error)
             switch code {
             case "OS_ProToolsIsNotAvailable", "SDK_GrpcGeneric": return connection
             case "PT_NoOpenedSession", "OS_NoSessionFound": return noSession
@@ -99,6 +106,16 @@ enum UserFacingError {
             case "PT_SampleRateMismatch": return sampleRate
             case "PT_ReadOnlySession": return readOnly
             case "PT_UnsupportedCommand", "SDK_VersionMismatch", "SDK_NotImplemented": return version
+            case "PT_UnknownError":
+                guard let message = error["command_error_message"] as? String,
+                      message.hasPrefix("Can't create bounce files because "),
+                      message.contains("is not an audio playback volume") else { return unknownPT }
+                let hasLongGOPWarning = errors.contains { error in
+                    (error["is_warning"] as? Bool) == true
+                        && (error["command_error_message"] as? String)?
+                            .contains("Long GOP video requires the first frame of the file") == true
+                }
+                return hasLongGOPWarning ? bounceVolume + "\n\n" + longGOPSelection : bounceVolume
             default: return unknownPT
             }
         }
@@ -120,13 +137,15 @@ enum UserFacingError {
         return raw
     }
 
-    private static func ptslErrorCode(in raw: String) -> String? {
+    private static func ptslErrors(in raw: String) -> [[String: Any]]? {
         let source = raw.range(of: "PTSL status").map { String(raw[$0.lowerBound...]) } ?? raw
         guard let start = source.firstIndex(of: "{"), let end = source.lastIndex(of: "}"),
               start <= end,
-              let json = try? JSONSerialization.jsonObject(with: Data(source[start...end].utf8)) as? [String: Any],
-              let errors = json["errors"] as? [[String: Any]],
-              let error = errors.first(where: { ($0["is_warning"] as? Bool) != true }) else { return nil }
+              let json = try? JSONSerialization.jsonObject(with: Data(source[start...end].utf8)) as? [String: Any] else { return nil }
+        return json["errors"] as? [[String: Any]]
+    }
+
+    private static func ptslErrorCode(_ error: [String: Any]) -> String {
         if let text = error["command_error_type"] as? String {
             return text.hasPrefix("CEType_") ? String(text.dropFirst(7)) : text
         }

@@ -93,7 +93,7 @@ let package = Package(
                 .linkedFramework("AppKit"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("QuartzCore"),
-                .linkedFramework("QuickLookUI")
+                .linkedFramework("AVKit")
             ]
         ),
         .executableTarget(

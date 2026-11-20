@@ -467,7 +467,7 @@ public actor RealProToolsAdapter: ProToolsControlling {
         }
         let detail = lastFailure.map { ": \($0.localizedDescription)" } ?? ""
         throw QuickBounceError.connection(
-            "Pro Tools did not return to an idle command state after cancellation\(detail)"
+            "Pro Tools did not return to an idle command state\(detail)"
         )
     }
 

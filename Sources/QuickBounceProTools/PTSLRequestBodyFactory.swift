@@ -186,14 +186,23 @@ enum PTSLRequestBodyFactory {
         }
 
         if request.kind == .mov {
+            let exportOption: String
+            let codecName: String
+            switch request.videoMode {
+            case .sameAsSource:
+                exportOption = modernEnums ? "EMVEOptions_SameAsSource" : "VE_SameAsSource"
+                codecName = ""
+            case .transcodeH264:
+                exportOption = modernEnums ? "EMVEOptions_Transcode" : "VE_Transcode"
+                codecName = "H264"
+            }
             body["video_info"] = [
                 "include_video": modernEnums ? "TBool_True" : "TB_True",
-                "export_option": modernEnums ? "EMVEOptions_SameAsSource" : "VE_SameAsSource",
+                "export_option": exportOption,
                 "replace_timecode_track": modernEnums ? "TBool_False" : "TB_False",
-                // The PTSL schema marks both fields as required even when
-                // Same As Source means Pro Tools will not transcode video.
+                // Let Pro Tools choose encoding properties for H.264.
                 "codec_info": [
-                    "codec_name": "",
+                    "codec_name": codecName,
                     "property_list": []
                 ]
             ]

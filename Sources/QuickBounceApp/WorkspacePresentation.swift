@@ -279,7 +279,7 @@ private func quickBounceGlobalHotKeyHandler(
 @MainActor
 final class WorkspaceWindowController {
     private weak var window: NSWindow?
-    private var regularContentWidth: CGFloat = 1_560
+    private var regularContentWidth = WorkspaceGeometry.defaultExpandedWidth
     private var compact = false
     private var animationGeneration = 0
     private var baseLevel: NSWindow.Level = .normal
@@ -298,7 +298,9 @@ final class WorkspaceWindowController {
         guard self.window !== window else { return }
         removeScreenObservers()
         self.window = window
-        regularContentWidth = max(1_280, window.contentLayoutRect.width)
+        let width = window.contentRect(forFrameRect: window.frame).width
+        regularContentWidth = width >= WorkspaceGeometry.minimumExpandedWidth
+            ? max(1_280, width) : WorkspaceGeometry.defaultExpandedWidth
         baseLevel = window.level
         baseCollectionBehavior = window.collectionBehavior
         compact = false
@@ -306,9 +308,9 @@ final class WorkspaceWindowController {
             screenObservers.append(NotificationCenter.default.addObserver(
                 forName: name, object: name == NSWindow.didChangeScreenNotification ? window : nil,
                 queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
+            ) { [weak self, weak window] _ in
+                Task { @MainActor [weak self, weak window] in
+                    guard let self, let window, self.window === window else { return }
                     self.apply(reviewExpanded: self.reviewExpanded, keepOnTop: self.keepOnTop, animated: false)
                 }
             })
@@ -327,27 +329,35 @@ final class WorkspaceWindowController {
         // Lower the minimum before collapsing. When expanding, retain the
         // compact minimum until the animation finishes; raising it first makes
         // AppKit snap the window to full width before it can animate.
-        let visibleContent = window.screen.map { window.contentRect(forFrameRect: $0.visibleFrame).size }
+        let visibleFrame = window.screen?.visibleFrame
+        let visibleContent = visibleFrame.map { window.contentRect(forFrameRect: $0).size }
         let minimum = NSSize(
             width: min(shouldCompact ? 570 : WorkspaceGeometry.minimumExpandedWidth, visibleContent?.width ?? 1_280),
             height: min(700, visibleContent?.height ?? 760)
         )
-        window.contentMinSize = NSSize(width: min(570, minimum.width), height: minimum.height)
+        let currentContentWidth = window.contentRect(forFrameRect: window.frame).width
 
         if shouldCompact != compact {
             compact = shouldCompact
             if shouldCompact {
-                regularContentWidth = max(1_280, window.contentLayoutRect.width)
+                if currentContentWidth >= WorkspaceGeometry.minimumExpandedWidth {
+                    regularContentWidth = max(1_280, currentContentWidth)
+                }
                 window.contentMinSize = minimum
                 resize(
                     window: window,
-                    contentWidth: 730,
+                    contentWidth: WorkspaceGeometry.compactWidth,
+                    minimumContentSize: minimum,
+                    visibleFrame: visibleFrame,
                     animated: animated
                 )
             } else {
+                window.contentMinSize = NSSize(width: min(570, minimum.width), height: minimum.height)
                 resize(
                     window: window,
                     contentWidth: max(1_280, regularContentWidth),
+                    minimumContentSize: minimum,
+                    visibleFrame: visibleFrame,
                     animated: animated
                 ) { [weak self, weak window] in
                     guard let self, let window,
@@ -359,9 +369,18 @@ final class WorkspaceWindowController {
             }
         } else {
             window.contentMinSize = minimum
-            // Also fit an already-expanded window after a screen change or
-            // when a batch completes; don't require the user to resize it.
-            resize(window: window, contentWidth: window.contentLayoutRect.width, animated: false)
+            // Screen changes can arrive before the collapse animation reaches
+            // its target. Keep narrower compact windows and finish wider ones.
+            let fittingWidth = shouldCompact
+                ? min(currentContentWidth, WorkspaceGeometry.compactWidth)
+                : currentContentWidth
+            resize(
+                window: window,
+                contentWidth: fittingWidth,
+                minimumContentSize: minimum,
+                visibleFrame: visibleFrame,
+                animated: false
+            )
         }
         window.level = keepOnTop ? .floating : baseLevel
         if keepOnTop {
@@ -395,18 +414,27 @@ final class WorkspaceWindowController {
     private func resize(
         window: NSWindow,
         contentWidth: CGFloat,
+        minimumContentSize: NSSize,
+        visibleFrame: NSRect?,
         animated: Bool,
         completion: (() -> Void)? = nil
     ) {
         let oldFrame = window.frame
         var contentRect = window.contentRect(forFrameRect: oldFrame)
-        contentRect.size.width = contentWidth
+        // setFrame(_:display:) bypasses contentMinSize. A screen-change
+        // notification can arrive with the expanded window still at compact width.
+        contentRect.size.width = max(contentWidth, minimumContentSize.width)
+        contentRect.size.height = max(contentRect.height, minimumContentSize.height)
         var newFrame = window.frameRect(forContentRect: contentRect)
         newFrame.origin.x = oldFrame.minX
         newFrame.origin.y = oldFrame.maxY - newFrame.height
 
-        if let visible = window.screen?.visibleFrame {
-            newFrame = WorkspaceGeometry.fittedFrame(newFrame, in: visible)
+        if let visibleFrame {
+            newFrame = WorkspaceGeometry.fittedFrame(newFrame, in: visibleFrame)
+        }
+        guard newFrame != oldFrame else {
+            completion?()
+            return
         }
         let shouldAnimate = animated
             && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -428,6 +456,8 @@ final class WorkspaceWindowController {
 }
 
 enum WorkspaceGeometry {
+    static let compactWidth: CGFloat = 730
+    static let defaultExpandedWidth: CGFloat = 1_560
     static let minimumExpandedWidth: CGFloat = 1_020
 
     struct Columns {

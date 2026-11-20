@@ -21,7 +21,7 @@ struct QuickBounceDesktopApp: App {
                     (AppTheme(rawValue: value) ?? .system).apply()
                 }
         }
-        .defaultSize(width: 1_560, height: 900)
+        .defaultSize(width: WorkspaceGeometry.compactWidth, height: 900)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button(L("About QuickBounce"), action: AppAttribution.showAbout)
@@ -45,11 +45,6 @@ struct QuickBounceDesktopApp: App {
                 }
                 .disabled(!model.canHandleReviewSpacebar)
                 .menuFunctionTip(reviewSpacebarTitle)
-
-                Button(L("Close Quick Look")) {
-                    model.quickLook.close()
-                }
-                .keyboardShortcut(.escape, modifiers: [])
             }
 
             CommandMenu(L("Workspace")) {
@@ -70,9 +65,7 @@ struct QuickBounceDesktopApp: App {
     }
 
     private var reviewSpacebarTitle: String {
-        if !model.selectedAudioArtifacts.isEmpty {
-            return model.isPlaying ? "Pause" : "Play"
-        }
-        return "Quick Look Selected Movie"
+        if model.reviewedMOV != nil { return "Play or Pause Video" }
+        return model.isPlaying ? "Pause" : "Play"
     }
 }

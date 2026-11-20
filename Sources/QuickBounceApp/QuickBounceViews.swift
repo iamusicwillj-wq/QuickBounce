@@ -21,10 +21,14 @@ struct QuickBounceWorkspace: View {
                     Divider().frame(width: 1)
                     BounceSettingsPanel(model: model).frame(width: columns.settings)
                     if model.isReviewPaneVisible {
+                        let showingMovie = model.reviewedMOV != nil
                         Divider().frame(width: 1)
-                        ReviewPanel(model: model).frame(width: columns.review)
-                        Divider().frame(width: 1)
-                        MasterStrip(model: model, meter: model.reviewMeter).frame(width: columns.master)
+                        ReviewPanel(model: model)
+                            .frame(width: showingMovie ? columns.review + columns.master + 1 : columns.review)
+                        if !showingMovie {
+                            Divider().frame(width: 1)
+                            MasterStrip(model: model, meter: model.reviewMeter).frame(width: columns.master)
+                        }
                     }
                 }
                 .frame(width: width, height: height, alignment: .topLeading)
@@ -612,6 +616,26 @@ private struct BounceSettingsPanel: View {
                             .labelsHidden()
                             .functionTip("MOV Audio Codec")
                         }
+                        if settings.movAudioCodec == .aac {
+                            SettingField("AAC BIT RATE MODE") {
+                                Picker(L("AAC Bit Rate Mode"), selection: Binding(
+                                    get: { settings.movAACBitRateMode },
+                                    set: { mode in
+                                        model.updateSelectedSettings { settings in
+                                            if settings.exportType == .mov, settings.movAudioCodec == .aac {
+                                                settings.movAACBitRateMode = mode
+                                            }
+                                        }
+                                    }
+                                )) {
+                                    ForEach(AACBitRateMode.allCases) { mode in
+                                        Text(L(mode.displayName)).tag(mode)
+                                    }
+                                }
+                                .labelsHidden()
+                                .functionTip("AAC Bit Rate Mode")
+                            }
+                        }
                     }
 
                     SettingField("SAMPLE RATE") {
@@ -987,28 +1011,36 @@ private struct ReviewPanel: View {
 
             Divider()
 
-            ViewThatFits(in: .horizontal) {
-                HStack {
-                    modePicker
-                    Spacer(minLength: 8)
-                    reviewActions
+            if let movie = model.reviewedMOV, let item = model.moviePlayer.currentItem {
+                MoviePreview(name: movie.name, player: model.moviePlayer, item: item) {
+                    MovieOpenActions(model: model, artifact: movie)
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    modePicker
+                .id(movie.id)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ViewThatFits(in: .horizontal) {
                     HStack {
-                        Spacer(minLength: 0)
+                        modePicker
+                        Spacer(minLength: 8)
                         reviewActions
                     }
+                    VStack(alignment: .leading, spacing: 8) {
+                        modePicker
+                        HStack {
+                            Spacer(minLength: 0)
+                            reviewActions
+                        }
+                    }
                 }
+
+                if model.reviewMode == .stemsCheck {
+                    WaveformViewportControls(model: model)
+                }
+
+                ReviewContent(model: model, visibleMetrics: visibleMetrics)
+
+                TransportBar(model: model, clock: model.playbackClock)
             }
-
-            if model.reviewMode == .stemsCheck {
-                WaveformViewportControls(model: model)
-            }
-
-            ReviewContent(model: model, visibleMetrics: visibleMetrics)
-
-            TransportBar(model: model, clock: model.playbackClock)
         }
         .padding(20)
     }
@@ -1047,15 +1079,6 @@ private struct ReviewPanel: View {
                 }
                 .padding(8)
                 .frame(width: 310)
-            }
-
-            if model.selectedMOV != nil {
-                Button {
-                    model.toggleQuickLook()
-                } label: {
-                    LocalizedLabel(english: "Quick Look", systemImage: "eye")
-                }
-                .functionTip("Quick Look")
             }
         }
         .fixedSize()
@@ -1194,8 +1217,8 @@ private struct ArtifactList: View {
                     )
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) {
-                        model.selectArtifact(artifact.id)
-                        if artifact.kind == .mov { model.openMOV(artifact) }
+                        model.selectArtifact(artifact.id, autoplayMovie: false)
+                        if artifact.canPreviewVideo { model.openMOV(artifact) }
                     }
                     .onTapGesture {
                         model.selectArtifact(
@@ -1212,12 +1235,8 @@ private struct ArtifactList: View {
                         .disabled(!FileManager.default.fileExists(atPath: artifact.path))
                         .menuFunctionTip("Reveal in Finder")
 
-                        if artifact.kind == .mov {
-                            Button {
-                                model.openMOV(artifact)
-                            } label: {
-                                Label(L("Open in Default Player"), systemImage: "play.rectangle")
-                            }
+                        if artifact.canPreviewVideo {
+                            MovieOpenActions(model: model, artifact: artifact)
                         }
                     }
                 }
@@ -1282,7 +1301,7 @@ private struct ArtifactRow: View {
             }
             Spacer()
             if artifact.kind == .mov {
-                Label(L("Quick Look"), systemImage: "play.rectangle")
+                Label(L("Video Preview"), systemImage: "play.rectangle")
                     .labelStyle(.iconOnly)
                     .font(.title3)
                     .foregroundStyle(.secondary)
@@ -1369,15 +1388,9 @@ private struct ReviewContent: View {
                         }
                     }
                 }
-            } else if let movie = model.selectedMOV {
-                MOVReviewPlaceholder(
-                    artifact: movie,
-                    quickLook: model.toggleQuickLook,
-                    open: { model.openMOV(movie) }
-                )
             } else {
                 ContentUnavailableView(
-                    L("Select WAV or MP3 Files"),
+                    L("Select Files to Review"),
                     systemImage: "waveform",
                     description: Text(L("Click one file, Shift-click to add a range, or Option-click to select all."))
                 )
@@ -1388,33 +1401,22 @@ private struct ReviewContent: View {
 
 }
 
-private struct MOVReviewPlaceholder: View {
+private struct MovieOpenActions: View {
     @AppStorage(AppLanguage.preferenceKey) private var interfaceLanguage = "en"
+    let model: AppModel
     let artifact: AudioArtifact
-    let quickLook: () -> Void
-    let open: () -> Void
 
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "play.rectangle.on.rectangle")
-                .font(.system(size: 52))
-                .foregroundStyle(.cyan)
-            Text(artifact.name)
-                .font(.title3.weight(.semibold))
-            Text(L("MOV uses macOS system preview and never enters the waveform or audio Review graph."))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            HStack {
-                Button(L("Quick Look (Space)"), action: quickLook).functionTip("Quick Look (Space)")
-                    .buttonStyle(.borderedProminent)
-                Button(L("Open in Default Player"), action: open).functionTip("Open in Default Player")
-                    .buttonStyle(.bordered)
-            }
+        Button {
+            model.openMOV(artifact, inBrowser: true)
+        } label: {
+            Label(L("Open in Default Browser"), systemImage: "safari")
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(30)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+        Button {
+            model.openMOV(artifact)
+        } label: {
+            Label(L("Open in Default Player"), systemImage: "play.rectangle")
+        }
     }
 }
 

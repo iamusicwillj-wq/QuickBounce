@@ -164,17 +164,30 @@ public struct ProToolsConnection: Codable, Hashable, Sendable {
     }
 }
 
+public enum ProToolsVideoExportMode: Hashable, Sendable {
+    case sameAsSource
+    case transcodeH264
+}
+
 public struct ProToolsExportRequest: Hashable, Sendable {
     public var plan: BouncePlan
     public var stagingDirectory: URL
     public var baseFileName: String
     public var kind: ArtifactKind
+    public var videoMode: ProToolsVideoExportMode
 
-    public init(plan: BouncePlan, stagingDirectory: URL, baseFileName: String, kind: ArtifactKind) {
+    public init(
+        plan: BouncePlan,
+        stagingDirectory: URL,
+        baseFileName: String,
+        kind: ArtifactKind,
+        videoMode: ProToolsVideoExportMode = .sameAsSource
+    ) {
         self.plan = plan
         self.stagingDirectory = stagingDirectory
         self.baseFileName = baseFileName
         self.kind = kind
+        self.videoMode = videoMode
     }
 }
 

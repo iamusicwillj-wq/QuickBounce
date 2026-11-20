@@ -4,9 +4,10 @@ QuickBounce is a macOS app for batching and reviewing Pro Tools bounces. Save th
 
 QuickBounce 是一款 macOS 工具，帮助你记录 Pro Tools 中各个混音版本的独奏、静音和时间选区，批量导出并检查文件。[中文使用手册](docs/USER_GUIDE.zh-CN.md)
 
-- Export WAV, MP3 and MOV. Version 0.7.0 adds AAC as a MOV audio option alongside PCM.
+- Export WAV and MP3, or MOV with PCM or AAC audio.
 - Save per-mix export presets and recall a session's mix list.
 - Inspect waveforms, peaks and loudness. Compare mixes or audition time-aligned stems.
+- Preview MOV files in QuickBounce. In v0.7.4, use the full-screen button in the preview. Press Esc or click Exit Full Screen to return.
 
 ## Requirements
 

@@ -22,8 +22,8 @@ The automated tests link against the PTSL framework and exercise the workflows w
 
 The optional WAV alignment utility and its Python tests use NumPy. With NumPy installed, run `python3 Tools/test_bounce_alignment.py`.
 
-The app is created at `Build/QuickBounce V0.7.0.app` with an ad hoc signature for local use. Open Pro Tools 2025.12 or later for live integration. To preview the app with generated data, run
+The app is created at `Build/QuickBounce V0.7.4.app` with an ad hoc signature for local use. Open Pro Tools 2025.12 or later for live integration. To preview the app with generated data, run
 
 ```sh
-open -n "Build/QuickBounce V0.7.0.app" --args --demo
+open -n "Build/QuickBounce V0.7.4.app" --args --demo
 ```

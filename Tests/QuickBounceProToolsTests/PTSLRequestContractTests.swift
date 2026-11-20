@@ -190,6 +190,23 @@ func movExportBodyUsesSameAsSourceVideoAndPCM(codec: MOVAudioCodec) throws {
     #expect(audio["compression_type"] as? String == "CType_PCM")
 }
 
+@Test func videoRetryRequestsH264WithoutChangingSelectionOrPCMAudio() throws {
+    var request = makeExportRequest(kind: .mov, sourceType: .physicalOutput, sourceName: "Playback 1-2")
+    request.plan.settings.movAudioCodec = .aac
+    let original = try PTSLRequestBodyFactory.exportMix(request)
+    request.videoMode = .transcodeH264
+    let retry = try PTSLRequestBodyFactory.exportMix(request)
+
+    let video = try #require(retry["video_info"] as? [String: Any])
+    let codec = try #require(video["codec_info"] as? [String: Any])
+    #expect(video["export_option"] as? String == "EMVEOptions_Transcode")
+    #expect(codec["codec_name"] as? String == "H264")
+    for field in ["start_time", "end_time", "audio_info", "location_info"] {
+        let previous = try #require(original[field] as? NSDictionary)
+        #expect(retry[field] as? NSDictionary == previous)
+    }
+}
+
 @Test func importBodySpotsNewTrackAtExactSamples() throws {
     let request = ImportAudioRequest(
         fileURL: URL(fileURLWithPath: "/Bounced Files/Main Mix.wav"),

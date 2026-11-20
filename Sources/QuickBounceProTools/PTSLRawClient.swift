@@ -105,15 +105,44 @@ public enum PTSLTransportError: Error, LocalizedError, Sendable {
     }
 
     var indicatesInsufficientDiskSpace: Bool {
-        guard case .command(_, let message) = self,
-              let payload = try? JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any],
-              let errors = payload["errors"] as? [[String: Any]] else { return false }
-        return errors.contains { error in
+        commandErrors.contains { error in
             guard (error["is_warning"] as? Bool) != true else { return false }
             let code = error["command_error_type"]
             return (code as? Int) == 6 || (code as? String) == "CEType_OS_DiskSpace"
                 || (code as? String) == "OS_DiskSpace"
         }
+    }
+
+    public var canRetryWithVideoTranscode: Bool {
+        guard case .command(status: 4, _) = self else { return false }
+        let errors = commandErrors
+        func rejectsSameAsSource(_ message: String) -> Bool {
+            message.contains("not supported for same as source export")
+                || message.contains("same as source option will be disabled")
+                || message.contains("long gop video requires the first frame of the file")
+        }
+
+        guard errors.contains(where: { error in
+            rejectsSameAsSource((error["command_error_message"] as? String ?? "").lowercased())
+        }) else { return false }
+
+        // Pro Tools can bundle this warning with an independent failure,
+        // including an unwritable audio volume. Retry only the video failure.
+        return errors.allSatisfy { error in
+            if (error["is_warning"] as? Bool) == true { return true }
+            let message = (error["command_error_message"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return rejectsSameAsSource(message)
+                || message == "failed to procede with bounce. refer to error dialog."
+                || message == "failed to proceed with bounce. refer to error dialog."
+        }
+    }
+
+    private var commandErrors: [[String: Any]] {
+        guard case .command(_, let message) = self,
+              let payload = try? JSONSerialization.jsonObject(with: Data(message.utf8)) as? [String: Any],
+              let errors = payload["errors"] as? [[String: Any]] else { return [] }
+        return errors
     }
 
     public var errorDescription: String? {
